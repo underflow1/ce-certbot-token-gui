@@ -159,6 +159,21 @@ else
     step_done
 fi
 
+step "Проверка установки плагина python3-certbot-nginx"
+if dpkg -l | grep -q "^ii.*python3-certbot-nginx"; then
+    step_progress_stop
+    info "Плагин python3-certbot-nginx уже установлен"
+else
+    step_progress_stop
+    step "Установка плагина python3-certbot-nginx"
+    if ! apt-get install -y python3-certbot-nginx > /dev/null 2>&1; then
+        step_progress_stop
+        error "Не удалось установить python3-certbot-nginx"
+        exit 1
+    fi
+    step_done
+fi
+
 # ============================================================================
 # СОЗДАНИЕ ДИРЕКТОРИИ ДЛЯ ТОКЕНА
 # ============================================================================
