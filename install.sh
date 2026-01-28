@@ -243,6 +243,94 @@ else
 fi
 
 # ============================================================================
+# ПОЛУЧЕНИЕ СЕРТИФИКАТА И НАСТРОЙКА NGINX
+# ============================================================================
+
+echo ""
+echo -e "${BOLD}${YELLOW}Хотите получить сертификат и настроить nginx сейчас? (y/n) [n]: ${NC}" >&2
+read -r GET_CERT <&3
+GET_CERT=${GET_CERT:-n}
+
+if [[ "$GET_CERT" =~ ^[Yy]$ ]]; then
+    echo ""
+    echo -e "${BOLD}${YELLOW}Введите email для уведомлений Let's Encrypt:${NC}" >&2
+    read -r CERT_EMAIL <&3
+    
+    if [ -z "$CERT_EMAIL" ]; then
+        warn "Email не указан, используем --register-unsafely-without-email"
+        CERT_EMAIL_ARG="--register-unsafely-without-email"
+    else
+        CERT_EMAIL_ARG="--email $CERT_EMAIL"
+    fi
+    
+    echo ""
+    echo -e "${BOLD}${YELLOW}Введите домены через пробел (например: example.com www.example.com):${NC}" >&2
+    read -r DOMAINS <&3
+    
+    if [ -z "$DOMAINS" ]; then
+        warn "Домены не указаны, пропускаем получение сертификата"
+    else
+        # Формируем список доменов для certbot
+        DOMAIN_ARGS=""
+        for domain in $DOMAINS; do
+            DOMAIN_ARGS="$DOMAIN_ARGS -d $domain"
+        done
+        
+        # Шаг 1: Получение сертификата через DNS
+        step "Получение сертификата через DNS-валидацию Cloudflare"
+        if certbot certonly \
+            --dns-cloudflare \
+            --dns-cloudflare-credentials "$CLOUDFLARE_INI" \
+            --non-interactive \
+            --agree-tos \
+            $CERT_EMAIL_ARG \
+            $DOMAIN_ARGS 2>&1; then
+            step_done
+            success "Сертификат успешно получен"
+            
+            # Шаг 2: Настройка nginx (если nginx установлен)
+            if command -v nginx &> /dev/null; then
+                step "Автоматическая настройка nginx"
+                # Получаем первый домен для информации
+                FIRST_DOMAIN=$(echo $DOMAINS | awk '{print $1}')
+                
+                # Формируем команду certbot --nginx с доменами
+                NGINX_CMD="certbot --nginx --non-interactive --agree-tos $CERT_EMAIL_ARG"
+                for domain in $DOMAINS; do
+                    NGINX_CMD="$NGINX_CMD -d $domain"
+                done
+                
+                if eval $NGINX_CMD 2>&1; then
+                    step_done
+                    success "Nginx настроен автоматически"
+                    
+                    # Перезагрузка nginx
+                    step "Перезагрузка nginx"
+                    if systemctl reload nginx > /dev/null 2>&1; then
+                        step_done
+                    else
+                        step_progress_stop
+                        warn "Не удалось перезагрузить nginx автоматически"
+                        info "Выполните вручную: sudo systemctl reload nginx"
+                    fi
+                else
+                    step_progress_stop
+                    warn "Не удалось автоматически настроить nginx"
+                    info "Настройте nginx вручную, используя сертификаты из: /etc/letsencrypt/live/$FIRST_DOMAIN/"
+                fi
+            else
+                warn "Nginx не установлен, пропускаем автоматическую настройку"
+                info "После установки nginx выполните: sudo certbot --nginx $DOMAIN_ARGS"
+            fi
+        else
+            step_progress_stop
+            error "Не удалось получить сертификат"
+            warn "Проверьте токен Cloudflare и домены"
+        fi
+    fi
+fi
+
+# ============================================================================
 # ЗАВЕРШЕНИЕ
 # ============================================================================
 
@@ -258,7 +346,7 @@ echo -e "    ${CYAN}  --dns-cloudflare-credentials $CLOUDFLARE_INI \\${NC}"
 echo -e "    ${CYAN}  -d your-domain.com \\${NC}"
 echo -e "    ${CYAN}  -d www.your-domain.com${NC}"
 echo ""
-echo -e "  ${BOLD}Или для автоматической настройки nginx:${NC}"
+echo -e "  ${BOLD}После получения сертификата настройте nginx:${NC}"
 echo -e "    ${CYAN}sudo certbot --nginx -d your-domain.com${NC}"
 echo ""
 echo -e "  ${BOLD}Проверка статуса автообновления:${NC}"
