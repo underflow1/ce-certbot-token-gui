@@ -259,6 +259,45 @@ fi
 # ПОЛУЧЕНИЕ СЕРТИФИКАТА ЧЕРЕЗ DNS
 # ============================================================================
 
+# Нормализация доменов (убираем лишние пробелы и невидимые символы)
+step "Нормализация доменов"
+VALIDATED_DOMAINS=""
+for domain in $DOMAINS; do
+    # Убираем все пробелы и невидимые символы, оставляем только печатные ASCII
+    domain=$(echo "$domain" | tr -d '[:space:]' | tr -cd '[:print:]')
+    
+    if [ -z "$domain" ]; then
+        continue
+    fi
+    
+    # Проверяем что домен содержит только допустимые символы
+    if ! echo "$domain" | grep -qE '^[a-zA-Z0-9.-]+$'; then
+        warn "Домен содержит недопустимые символы: $domain"
+        # Пытаемся конвертировать в punycode если есть python3
+        if command -v python3 &> /dev/null; then
+            domain=$(python3 -c "import encodings.idna; print(encodings.idna.ToASCII('$domain').decode('ascii'))" 2>/dev/null || echo "$domain")
+        fi
+    fi
+    
+    if [ -n "$VALIDATED_DOMAINS" ]; then
+        VALIDATED_DOMAINS="$VALIDATED_DOMAINS $domain"
+    else
+        VALIDATED_DOMAINS="$domain"
+    fi
+done
+
+if [ -z "$VALIDATED_DOMAINS" ]; then
+    step_progress_stop
+    error "Не удалось нормализовать домены"
+    exit 1
+fi
+
+step_done
+info "Домены для сертификата: $VALIDATED_DOMAINS"
+
+# Обновляем DOMAINS для использования в дальнейшем
+DOMAINS="$VALIDATED_DOMAINS"
+
 # Формируем список доменов для certbot
 DOMAIN_ARGS=""
 for domain in $DOMAINS; do
@@ -266,18 +305,31 @@ for domain in $DOMAINS; do
 done
 
 step "Получение сертификата через DNS-валидацию Cloudflare"
-if certbot certonly \
+info "Домены: $DOMAINS"
+CERTBOT_OUTPUT=$(mktemp)
+set +e
+certbot certonly \
     --dns-cloudflare \
     --dns-cloudflare-credentials "$CLOUDFLARE_INI" \
     --non-interactive \
     --agree-tos \
     $CERT_EMAIL_ARG \
-    $DOMAIN_ARGS 2>&1; then
+    $DOMAIN_ARGS > "$CERTBOT_OUTPUT" 2>&1
+CERTBOT_EXIT_CODE=$?
+set -e
+
+if [ $CERTBOT_EXIT_CODE -eq 0 ]; then
     step_done
     success "Сертификат успешно получен"
+    rm -f "$CERTBOT_OUTPUT"
 else
     step_progress_stop
     error "Не удалось получить сертификат"
+    echo ""
+    echo -e "${BOLD}${RED}Детали ошибки:${NC}"
+    cat "$CERTBOT_OUTPUT" | grep -v "^Saving debug log" | tail -20
+    rm -f "$CERTBOT_OUTPUT"
+    echo ""
     warn "Проверьте токен Cloudflare и домены"
     exit 1
 fi
